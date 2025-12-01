@@ -27,7 +27,8 @@ from .util import make_stationary, invalid_cov_mat, make_pd, get_optim
 logger = logging.getLogger(__name__)
 
 SCALE_OSE = np.array([10.0, 10.0, 1.0, 1.0, 1.0, 1.0, 0.1, 0.1, 10.0, 100.0, 100.0, 10.0, 100.0, 100.0, 0.1])
-C_PENAL = 1e6
+# Objective values are on the order of 1e9, so keep invalid draws well above them.
+C_PENAL = 1e12
 
 
 def _stabilize_covariance(matrix: np.ndarray, *, floor: float = 1e-6) -> np.ndarray:
@@ -40,6 +41,19 @@ def _stabilize_covariance(matrix: np.ndarray, *, floor: float = 1e-6) -> np.ndar
     if min_eig < floor:
         mat = mat + np.eye(mat.shape[0]) * (floor - min_eig + 1e-8)
     return mat
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def _logit(p: np.ndarray, *, eps: float = 1e-9) -> np.ndarray:
+    p = np.clip(p, eps, 1.0 - eps)
+    return np.log(p) - np.log1p(-p)
+
+
+def _softplus(x: np.ndarray) -> np.ndarray:
+    return np.log1p(np.exp(-np.abs(x))) + np.maximum(x, 0.0)
 
 
 def affine_loadings(
@@ -737,11 +751,18 @@ def theta2pars_ose(theta: Sequence[float], WN: np.ndarray, mats: Sequence[float]
         raise ValueError(f"theta length {theta.size} does not match expected {expected_len}")
     theta_scaled = theta / SCALE_OSE
     idx = 0
-    kinfQ = theta_scaled[idx]
+    kinfQ = float(_softplus(theta_scaled[idx]))
     idx += 1
-    dlamQ = theta_scaled[idx : idx + N]
+    lam_raw = theta_scaled[idx : idx + N]
     idx += N
-    lamQ = np.cumsum(dlamQ + np.concatenate(([1.0], np.zeros(N - 1))))
+    eps = 1e-4
+    upper = 1.0 - eps
+    lamQ = np.empty(N)
+    lamQ[0] = eps + (upper - eps) * _sigmoid(lam_raw[0])
+    for i in range(1, N):
+        prev = lamQ[i - 1]
+        lamQ[i] = eps + (prev - eps) * (1.0 - _sigmoid(lam_raw[i]))
+    dlamQ = np.concatenate(([lamQ[0] - 1.0], np.diff(lamQ)))
     p = theta_scaled[idx : idx + (N - 1)]
     idx += N - 1
     a = theta_scaled[idx : idx + (N - 1)]
@@ -753,7 +774,7 @@ def theta2pars_ose(theta: Sequence[float], WN: np.ndarray, mats: Sequence[float]
     tril_idx = np.tril_indices(N)
     L[tril_idx] = L_vals
     Sigma = L @ L.T
-    sigma_tau = math.exp(theta_scaled[idx])
+    sigma_tau = float(0.1 * _sigmoid(theta_scaled[idx]))
     return {
         "kinfQ": kinfQ,
         "dlamQ": dlamQ,
@@ -767,21 +788,33 @@ def theta2pars_ose(theta: Sequence[float], WN: np.ndarray, mats: Sequence[float]
 
 def pars2theta_ose(pars: dict) -> np.ndarray:
     lamQ = np.asarray(pars["lamQ"], dtype=float)
-    dlamQ = np.concatenate(([lamQ[0] - 1.0], np.diff(lamQ)))
     p = np.asarray(pars["p"], dtype=float)
     a = np.asarray(pars["a"], dtype=float)
     Sigma = np.asarray(pars["Sigma"], dtype=float)
     L = np.linalg.cholesky(Sigma).T
     tril_idx = np.tril_indices_from(L)
     sigma_tau = float(pars["sigma.tau"])
+    eps = 1e-4
+    upper = 1.0 - eps
+    kinf_raw = np.log(np.expm1(max(pars["kinfQ"], 1e-12)))
+    lam_raw = np.empty_like(lamQ)
+    lam0 = np.clip(lamQ[0], eps + 1e-9, upper - 1e-9)
+    lam_raw[0] = _logit((lam0 - eps) / (upper - eps))
+    for i in range(1, lamQ.size):
+        prev = np.clip(lamQ[i - 1], eps + 1e-9, upper - 1e-9)
+        denom = max(prev - eps, 1e-9)
+        ratio = np.clip((prev - lamQ[i]) / denom, 1e-9, 1.0 - 1e-9)
+        lam_raw[i] = _logit(ratio)
+    sigma_ratio = np.clip(sigma_tau / 0.1, 1e-9, 1.0 - 1e-9)
+    sigma_raw = _logit(sigma_ratio)
     theta = np.concatenate(
         [
-            np.array([pars["kinfQ"]]),
-            dlamQ,
+            np.array([kinf_raw]),
+            lam_raw,
             p,
             a,
             L[tril_idx],
-            np.array([math.log(sigma_tau)]),
+            np.array([sigma_raw]),
         ]
     )
     return theta * SCALE_OSE

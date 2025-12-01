@@ -12,6 +12,7 @@
 - Stabilized the Python workflow so it runs end-to-end inside a repo-local virtual environment: `requirements.txt` now pins NumPy 1.26 / Pandas 2.1, adds the missing `numexpr`, `bottleneck`, and `jinja2` dependencies, and documents the `OMP_NUM_THREADS=1` workaround required on macOS.
 - Fixed several runtime regressions uncovered while exercising `master.py`: the PTR loader now preserves the `yyyymm` column, HAC standard errors are computed with the `nlags` keyword demanded by Statsmodels 0.14, and the ADF trend flag uses `"n"`/`"c"` to keep `arch.unitroot` happy.
 - Hardened the DTSM stack by repairing near-singular covariance matrices (both for starting values and during likelihood evaluation) and by passing the correct `args=` payload into `get_optim`. The OSE optimizer now completes and emits `results/ose.pkl` again.
+- Reparameterized the OSE optimizer so the transformed variables (softplus/logistic for `kinfQ`, `lamQ`, `sigma_tau`) always respect their theoretical bounds, and raised the invalid-parameter penalty to dominate the feasible likelihood scale. This prevents `get_optim` from wandering into obviously invalid regions even if SciPy proposes aggressive steps.
 - Cleaned up predictive regression logging by computing excess return means without NumPy warnings and forcing all LaTeX table columns to object dtype, eliminating the Pandas `FutureWarning`.
 - Swept stray `.DS_Store` files, added `.venv/`, `results/`, and macOS artifacts to `.gitignore`, and captured the new output locations (`figures/`, `tables/`, `results/`) in the README for better discoverability.
 
@@ -22,4 +23,4 @@
 - **Validation and Testing**: compare Python outputs (figures, tables, OSE estimates) against the R originals to confirm numerical fidelity; add automated regression tests where feasible.
 - **Packaging & Distribution**: optionally wrap the Python modules as an installable package, add CLI entry points, and document environment requirements for reproducibility (e.g., optimized BLAS/LAPACK for SciPy).
 - **Documentation Enhancements**: expand README/agent docs with instructions for running the new DTSM code, interpreting outputs, and known performance considerations.
-- **OSE robustness**: the optimizer still lands on the penalty boundary (`get_optim` reports an objective of `1e6`). Although the run now finishes, investigating better starting values or constraints that prevent the penalty plateau will improve numerical stability.
+- **OSE robustness**: although the optimizer now respects parameter bounds, it still tends to settle on the penalty plateau. Better starting values or constrained optimizers are needed before we can trust the likelihood results.
