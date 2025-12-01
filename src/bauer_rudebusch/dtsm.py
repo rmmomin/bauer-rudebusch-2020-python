@@ -22,12 +22,24 @@ from scipy import linalg
 from scipy.optimize import minimize
 from scipy.linalg import null_space
 
-from .util import make_stationary, invalid_cov_mat, get_optim
+from .util import make_stationary, invalid_cov_mat, make_pd, get_optim
 
 logger = logging.getLogger(__name__)
 
 SCALE_OSE = np.array([10.0, 10.0, 1.0, 1.0, 1.0, 1.0, 0.1, 0.1, 10.0, 100.0, 100.0, 10.0, 100.0, 100.0, 0.1])
 C_PENAL = 1e6
+
+
+def _stabilize_covariance(matrix: np.ndarray, *, floor: float = 1e-6) -> np.ndarray:
+    """
+    Ensure a covariance matrix is well-conditioned for optimization.
+    """
+    mat = make_pd(matrix)
+    eigvals = np.linalg.eigvalsh(mat)
+    min_eig = float(np.min(eigvals))
+    if min_eig < floor:
+        mat = mat + np.eye(mat.shape[0]) * (floor - min_eig + 1e-8)
+    return mat
 
 
 def affine_loadings(
@@ -233,7 +245,7 @@ def estimate_jsz(Y: np.ndarray, est_sample: np.ndarray, WN: np.ndarray, mats: Se
     L = np.linalg.cholesky(var_fit["sigma"]).T
     start = get_starting_values_for_mle(L, Y_est, WN, mats, dt)
     theta_start = pars2theta_jsz(start)
-    opt_theta = get_optim(theta_start, obj_jsz, Y_est, WN, mats, dt, trace=0)
+    opt_theta = get_optim(theta_start, obj_jsz, args=(Y_est, WN, mats, dt), trace=0)
     pars = theta2pars_jsz(opt_theta, N)
 
     res_llk = jsz_llk(Y_est, WN, np.diag(pars["lamQ"] - 1.0), pars["Omega.cP"], mats, dt)
@@ -289,7 +301,12 @@ def estimate_ose(data: pd.DataFrame, output_path: Path) -> dict:
     pars_start = startval_ose(Y[est_sample], istar[est_sample], mod_jsz, WN, mats, dt)
     theta_start = pars2theta_ose(pars_start)
     logger.info("Optimizing OSE likelihood")
-    opt_theta = get_optim(theta_start, obj_ose, istar[est_sample], Y[est_sample], WN, mats, dt, trace=1)
+    opt_theta = get_optim(
+        theta_start,
+        obj_ose,
+        args=(istar[est_sample], Y[est_sample], WN, mats, dt),
+        trace=1,
+    )
     opt_pars = theta2pars_ose(opt_theta, WN, mats, dt)
     res_est = llk_ose(
         Y[est_sample],
@@ -605,7 +622,7 @@ def jsz_llk(
             proj = np.zeros((w.shape[1], w.shape[1]))
         average_yields = yields_obs[1:, :].mean(axis=0, keepdims=True)
         average_cp = cP[1:, :].mean(axis=0, keepdims=True)
-        lhs = (average_yields - alpha1_cp - average_cp @ bcp.T) @ (proj @ alpha0_cp.T)
+        lhs = (average_yields - alpha1_cp - average_cp @ bcp) @ (proj @ alpha0_cp.T)
         rhs = alpha0_cp @ proj @ alpha0_cp.T
         if np.allclose(rhs, 0):
             kinfq = float((rho0_target - beta1) / beta0)
@@ -834,7 +851,8 @@ def llk_ose(
     Pbar = make_pbar(p, rho0_cp, rho1_cp)
     Sigma_tilde = Sigma - np.outer(gamma, gamma) * sigma_tau**2
     if invalid_cov_mat(Sigma_tilde):
-        return {"llk": -C_PENAL}
+        logger.debug("Sigma_tilde not PD inside llk_ose; repairing covariance")
+    Sigma_tilde = _stabilize_covariance(Sigma_tilde)
 
     Ptilde = cP - np.ones((T + 1, 1)) @ Pbar.reshape(1, -1) - istar @ gamma.reshape(1, -1)
     var_fit = fit_var1(Ptilde, intercept=False)
@@ -955,16 +973,19 @@ def startval_ose(
     Ptilde = cP - np.ones((nobs, 1)) @ Pbar.reshape(1, -1) - istar.reshape(-1, 1) @ gamma.reshape(1, -1)
     var_fit = fit_var1(Ptilde, intercept=False)
     Phi = var_fit["Phi"]
-    Sigma_tilde = mod_jsz["Omega.cP"] - np.outer(gamma, gamma) * sigtau2
+    correction = np.outer(gamma, gamma) * sigtau2
+    Sigma_tilde = mod_jsz["Omega.cP"] - correction
     if invalid_cov_mat(Sigma_tilde):
-        raise ValueError("Sigma_tilde is not positive definite in startval_ose")
+        logger.warning("Sigma_tilde not PD; applying near-PD repair for OSE start values")
+    Sigma_tilde = _stabilize_covariance(Sigma_tilde)
+    Sigma = Sigma_tilde + correction
     return {
         "kinfQ": mod_jsz["kinfQ"],
         "lamQ": mod_jsz["lamQ"],
         "dlamQ": mod_jsz["dlamQ"],
         "p": p_opt,
         "a": a_opt,
-        "Sigma": mod_jsz["Omega.cP"],
+        "Sigma": Sigma,
         "sigma.tau": math.sqrt(sigtau2),
         "Phi": Phi,
         "Pbar": Pbar,

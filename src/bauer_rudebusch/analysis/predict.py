@@ -54,7 +54,7 @@ def _init_table() -> pd.DataFrame:
         "r2",
         "memo",
     ]
-    table = pd.DataFrame(index=index)
+    table = pd.DataFrame(index=index, dtype=object)
     table.insert(0, "label", rows[0][1])
     return table
 
@@ -78,7 +78,13 @@ def run_predictive_regressions(output_dir: Path | str = "tables", bootstrap: boo
     Y = data[yield_cols].to_numpy(dtype=float)
 
     xrn = excess_returns(Y, mats, h=1)
-    data["xr"] = np.nanmean(xrn, axis=1)
+    valid_counts = np.sum(~np.isnan(xrn), axis=1)
+    xr_mean = np.full(xrn.shape[0], np.nan)
+    mask = valid_counts > 0
+    if mask.any():
+        xr_sum = np.nansum(xrn, axis=1)
+        xr_mean[mask] = xr_sum[mask] / valid_counts[mask]
+    data["xr"] = xr_mean
 
     pcs, weights = _principal_components(Y)
     data["PC1"] = pcs[:, 0]
@@ -104,7 +110,10 @@ def run_predictive_regressions(output_dir: Path | str = "tables", bootstrap: boo
     for subsample in (False, True):
         label = "post1985" if subsample else "full"
         table = _init_table()
-        table = table.reindex(columns=["label"] + _column_names(rstar_desc))
+        column_order = ["label"] + _column_names(rstar_desc)
+        table = table.reindex(columns=column_order)
+        for col in column_order:
+            table[col] = table[col].astype(object)
         if subsample:
             mask = data["yyyymm"] >= 198501
         else:

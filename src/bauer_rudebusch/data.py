@@ -86,7 +86,7 @@ def load_jm(data_dir: Path = DATA_ROOT) -> pd.DataFrame:
 def load_ptr(data_dir: Path = DATA_ROOT) -> pd.DataFrame:
     frame = _load_csv(data_dir / "pistar_PTR.csv")
     frame["yyyymm"] = frame["Year"] * 100 + frame["Quarter"] * 3
-    frame = frame.rename(columns={frame.columns[-1]: "pistar.ptr"})
+    frame = frame.rename(columns={"pistar_PTR": "pistar.ptr"})
     return frame[["yyyymm", "pistar.ptr"]]
 
 

@@ -86,7 +86,7 @@ def _persistence_stats(residuals: pd.Series, nvar: int = 1) -> tuple[str, str, s
     rho = float(acf(residuals, nlags=1, fft=False)[1])
     half_life = np.log(0.5) / np.log(abs(rho)) if abs(rho) < 1 else np.inf
 
-    trend = "c" if nvar == 1 else "nc"
+    trend = "c" if nvar == 1 else "n"
     adf = ADF(residuals, trend=trend, lags=None)
     adf_stat = float(adf.stat)
     adf_cv = [adf.critical_values[level] for level in ("1%", "5%", "10%")]
@@ -136,7 +136,7 @@ def _build_dols_design(
 def _fit_dols(data: pd.DataFrame, y_col: str, regressors: Sequence[str], diff_cols: Sequence[str], p: int = 4) -> RegressionResult:
     X, y = _build_dols_design(data, y_col, regressors, diff_cols, p=p)
     model = OLS(y, X).fit()
-    cov = cov_hac(model, maxlags=6)
+    cov = cov_hac(model, nlags=6)
     se = pd.Series(np.sqrt(np.diag(cov)), index=X.columns)
     fitted = model.fittedvalues
     residuals = y - fitted
